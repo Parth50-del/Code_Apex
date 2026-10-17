@@ -1,0 +1,14 @@
+{
+  "name": "reporadar",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "concurrently \"npm --prefix backend run dev\" \"npm --prefix frontend run dev -- --host 0.0.0.0\"",
+    "build": "npm --prefix frontend run build",
+    "server": "npm --prefix backend run dev",
+    "client": "npm --prefix frontend run dev -- --host 0.0.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
