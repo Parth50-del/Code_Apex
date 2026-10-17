@@ -1,9 +1,13 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import fetch from 'node-fetch';
+import nodeFetch from 'node-fetch';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+
+// Prefer the global fetch (stubbable in tests) with node-fetch as fallback.
+const doFetch = (...args) =>
+  (typeof globalThis.fetch === 'function' ? globalThis.fetch : nodeFetch)(...args);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,6 +49,7 @@ const DEMO_DATA = {
 function makeGitHubHeaders() {
   const headers = {
     Accept: 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
     'User-Agent': 'RepoRadar/1.0',
   };
   if (process.env.GITHUB_TOKEN) {
@@ -67,6 +72,10 @@ function parseRepositoryUrl(value) {
     const owner = segments[0];
     const repo = segments[1].replace(/\.git$/i, '');
     if (!/^[A-Za-z0-9_.-]+$/.test(owner) || !/^[A-Za-z0-9_.-]+$/.test(repo)) return null;
+    // GitHub names may not end with dots or contain dot-dot sequences — and a
+    // trailing "." is how pasted "repo." typos sneak through the charset check.
+    if (owner.endsWith('.') || repo.endsWith('.')) return null;
+    if (owner.includes('..') || repo.includes('..')) return null;
     return { owner, repo };
   } catch {
     return null;
@@ -74,19 +83,21 @@ function parseRepositoryUrl(value) {
 }
 
 class GitHubError extends Error {
-  constructor(message, { status = null, rateLimited = false, retryAt = null } = {}) {
+  constructor(message, { status = null, rateLimited = false, retryAt = null, branch = null, branchNotFound = false } = {}) {
     super(message);
     this.name = 'GitHubError';
     this.status = status;
     this.rateLimited = rateLimited;
     this.retryAt = retryAt;
+    this.branch = branch;
+    this.branchNotFound = branchNotFound;
   }
 }
 
 async function fetchJson(url, options = {}) {
   let response;
   try {
-    response = await fetch(url, {
+    response = await doFetch(url, {
       ...options,
       headers: { ...makeGitHubHeaders(), ...(options.headers || {}) },
       signal: AbortSignal.timeout(15000),
@@ -129,6 +140,15 @@ function analyzeErrorResponse(error, subject = 'Repository') {
           error:
             'GitHub API rate limit reached for unauthenticated requests. Wait for the limit to reset or add GITHUB_TOKEN to .env for a higher limit.',
           retryAt: error.retryAt,
+        },
+      };
+    }
+    if (error.branchNotFound) {
+      return {
+        status: 404,
+        body: {
+          code: 'invalid_branch',
+          error: `Branch "${error.branch}" was not found in this repository. Select an existing branch and try again.`,
         },
       };
     }
@@ -427,13 +447,35 @@ function fileDetailsFor(item) {
   };
 }
 
-async function analyzeRepo(owner, repo, requestedPage = 1, perPage = 100) {
+async function analyzeRepo(owner, repo, requestedPage = 1, perPage = 100, requestedBranch = '') {
   const repoUrl = getGitHubApiUrl(owner, repo);
   const repoData = await fetchJson(repoUrl);
 
+  // When a branch is requested we pass it through to GitHub's commits API
+  // (the `sha` parameter selects the ref to walk). Unvalidated input never
+  // reaches the URL: both values come from parseRepositoryUrl / a strict
+  // branch-name check in the route.
+  const branchParam = requestedBranch ? `&sha=${encodeURIComponent(requestedBranch)}` : '';
   const commitPage = Math.max(1, Number(requestedPage) || 1);
-  const commitsUrl = `${repoUrl}/commits?per_page=${perPage}&page=${commitPage}`;
-  const commits = await fetchJson(commitsUrl);
+  const commitsUrl = `${repoUrl}/commits?per_page=${perPage}&page=${commitPage}${branchParam}`;
+  let commits;
+  try {
+    commits = await fetchJson(commitsUrl);
+  } catch (error) {
+    // The repository metadata request above already succeeded, so a 404/422
+    // here means the *branch* does not exist — never report it as a missing
+    // repository.
+    if (requestedBranch && error instanceof GitHubError && (error.status === 404 || error.status === 422)) {
+      throw new GitHubError(`Branch "${requestedBranch}" was not found in ${owner}/${repo}.`, {
+        status: error.status,
+        rateLimited: error.rateLimited,
+        retryAt: error.retryAt,
+        branch: requestedBranch,
+        branchNotFound: true,
+      });
+    }
+    throw error;
+  }
   const repoSlug = `${owner}/${repo}`;
   const normalizedCommits = (Array.isArray(commits) ? commits : []).map((commit) => normalizeCommit(commit, repoSlug));
 
@@ -467,6 +509,8 @@ async function analyzeRepo(owner, repo, requestedPage = 1, perPage = 100) {
     forks: repoData.forks_count ?? null,
     html_url: repoData.html_url || `https://github.com/${owner}/${repo}`,
     last_updated: repoData.updated_at ?? null,
+    // The owner avatar when GitHub returned one; the UI falls back gracefully.
+    avatar_url: repoData.owner?.avatar_url ?? null,
   };
 
   const fileHistory = buildFileHistory(changedFiles, normalizedCommits[0]?.date);
@@ -475,7 +519,10 @@ async function analyzeRepo(owner, repo, requestedPage = 1, perPage = 100) {
   const commitsDetailed = normalizedCommits.filter((commit) => commit.detailStatus === 'available').length;
 
   return {
-    repository: repoInfo,
+    repository: {
+      ...repoInfo,
+      analyzed_branch: requestedBranch || repoInfo.default_branch,
+    },
     commits: normalizedCommits,
     contributors: observedContributors,
     fileDetails: risk.map(fileDetailsFor),
@@ -495,8 +542,48 @@ async function analyzeRepo(owner, repo, requestedPage = 1, perPage = 100) {
   };
 }
 
+const BRANCH_PATTERN = /^[A-Za-z0-9._/-]{1,120}$/;
+
+function validBranchName(value) {
+  // The frontend omits the branch key when no branch is selected, so
+  // undefined/null must mean "use the default branch" — never "invalid".
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  // Empty string means "use the default branch" and is valid.
+  if (!trimmed) return '';
+  if (trimmed.startsWith('/') || trimmed.endsWith('/') || trimmed.includes('..')) return null;
+  if (trimmed.includes('@{') || trimmed.includes('\\') || trimmed.includes(' ')) return null;
+  return BRANCH_PATTERN.test(trimmed) ? trimmed : null;
+}
+
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, mode: 'live', timestamp: new Date().toISOString() });
+});
+
+app.get('/api/branches', async (req, res) => {
+  const repoUrl = String(req.query?.repoUrl || '').trim();
+  const repository = parseRepositoryUrl(repoUrl);
+  if (!repository) {
+    return res.status(400).json({ code: 'invalid_url', error: 'A valid GitHub repository URL is required.' });
+  }
+  try {
+    const branches = await fetchJson(`${getGitHubApiUrl(repository.owner, repository.repo)}/branches?per_page=100`);
+    const names = (Array.isArray(branches) ? branches : [])
+      .map((branch) => (branch && typeof branch.name === 'string' ? branch.name : null))
+      .filter(Boolean);
+    let defaultBranch = null;
+    try {
+      const repoData = await fetchJson(getGitHubApiUrl(repository.owner, repository.repo));
+      defaultBranch = repoData?.default_branch || null;
+    } catch {
+      defaultBranch = null;
+    }
+    return res.json({ branches: names.slice(0, 100).map((name) => ({ name })), default_branch: defaultBranch });
+  } catch (error) {
+    const mapped = analyzeErrorResponse(error, 'Branches');
+    return res.status(mapped.status).json(mapped.body);
+  }
 });
 
 app.get('/api/demo', (req, res) => {
@@ -517,11 +604,13 @@ app.get('/api/demo', (req, res) => {
       full_name: DEMO_DATA.repository.full_name,
       description: DEMO_DATA.repository.description,
       default_branch: DEMO_DATA.repository.default_branch,
+      analyzed_branch: DEMO_DATA.repository.default_branch,
       language: DEMO_DATA.repository.language ?? null,
       stars: DEMO_DATA.repository.stargazers_count ?? null,
       forks: DEMO_DATA.repository.forks_count ?? null,
       html_url: DEMO_DATA.repository.html_url,
       last_updated: DEMO_DATA.repository.updated_at ?? null,
+      avatar_url: null,
     },
     commits,
     contributors,
@@ -579,11 +668,22 @@ app.post('/api/analyze', async (req, res) => {
     });
   }
 
+  const branch = validBranchName(req.body?.branch);
+  if (branch === null) {
+    const rawBranch = String(req.body?.branch ?? '').trim();
+    return res.status(400).json({
+      code: 'invalid_branch',
+      error: rawBranch
+        ? `Branch "${rawBranch}" contains characters GitHub does not accept. Select an existing branch and try again.`
+        : 'The branch name contains characters GitHub does not accept. Select an existing branch and try again.',
+    });
+  }
+
   try {
-    const result = await analyzeRepo(repository.owner, repository.repo, 1, 100);
+    const result = await analyzeRepo(repository.owner, repository.repo, 1, 100, branch);
     return res.json(result);
   } catch (error) {
-    const mapped = analyzeErrorResponse(error, 'Repository');
+    const mapped = analyzeErrorResponse(error, branch ? `Branch "${branch}"` : 'Repository');
     return res.status(mapped.status).json(mapped.body);
   }
 });
@@ -605,6 +705,12 @@ app.get('*', (req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`RepoRadar backend running on http://localhost:${PORT}`);
-});
+if (process.env.NODE_ENV !== 'test') {
+  app.listen(PORT, () => {
+    console.log(`RepoRadar backend running on http://localhost:${PORT}`);
+  });
+}
+
+// Exported for regression tests (NODE_ENV=test skips listen so the module
+// can be imported without binding a port).
+export { app, parseRepositoryUrl, validBranchName, analyzeRepo, analyzeErrorResponse, GitHubError, fetchJson, getGitHubApiUrl };

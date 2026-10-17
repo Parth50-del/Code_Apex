@@ -2,6 +2,7 @@ import type { CommitDetail, RepoResponse } from '../types';
 
 export type ApiErrorKind =
   | 'invalid_url'
+  | 'invalid_branch'
   | 'not_found'
   | 'rate_limit'
   | 'access_denied'
@@ -33,6 +34,7 @@ const KIND_BY_CODE: Record<string, ApiErrorKind> = {
   missing_url: 'invalid_url',
   invalid_url: 'invalid_url',
   invalid_sha: 'invalid_url',
+  invalid_branch: 'invalid_branch',
   not_found: 'not_found',
   rate_limit: 'rate_limit',
   access_denied: 'access_denied',
@@ -91,17 +93,31 @@ async function requestJson<T>(input: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
+export type BranchSummary = {
+  branches: Array<{ name: string }>;
+  default_branch: string | null;
+};
+
 export function fetchDemo(signal?: AbortSignal): Promise<RepoResponse> {
   return requestJson<RepoResponse>('/api/demo', { signal });
 }
 
-export function analyzeRepository(repoUrl: string, signal?: AbortSignal): Promise<RepoResponse> {
+export function analyzeRepository(
+  repoUrl: string,
+  branch?: string | null,
+  signal?: AbortSignal,
+): Promise<RepoResponse> {
   return requestJson<RepoResponse>('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ repoUrl }),
+    body: JSON.stringify({ repoUrl, branch: branch || undefined }),
     signal,
   });
+}
+
+/** Non-fatal enhancement: list selectable branches for a live repository. */
+export function fetchBranches(repoUrl: string, signal?: AbortSignal): Promise<BranchSummary> {
+  return requestJson<BranchSummary>(`/api/branches?repoUrl=${encodeURIComponent(repoUrl)}`, { signal });
 }
 
 export function fetchCommitDetail(

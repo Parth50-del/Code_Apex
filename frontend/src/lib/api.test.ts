@@ -51,6 +51,35 @@ describe('API error mapping', () => {
     expect((thrown as ApiError).retryAt).toBe('2026-01-01T00:00:00.000Z');
   });
 
+  it('maps the backend invalid_branch code to the branch kind', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        fakeResponse({ code: 'invalid_branch', error: 'Branch "ghost" was not found in this repository.' }, 404),
+      ),
+    );
+    await expect(fetchDemo()).rejects.toMatchObject({
+      kind: 'invalid_branch',
+      status: 404,
+      message: 'Branch "ghost" was not found in this repository.',
+    });
+  });
+
+  it('sends the branch only when one is selected', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        seen.push(String(init?.body ?? ''));
+        return fakeResponse({ source: 'demo' });
+      }),
+    );
+    await analyzeRepository('https://github.com/a/b');
+    expect(seen[0]).toBe(JSON.stringify({ repoUrl: 'https://github.com/a/b' }));
+    await analyzeRepository('https://github.com/a/b', 'main');
+    expect(seen[1]).toBe(JSON.stringify({ repoUrl: 'https://github.com/a/b', branch: 'main' }));
+  });
+
   it('falls back to status mapping when the body is not JSON', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => fakeResponse('<html>Bad gateway</html>', 502)));
     await expect(analyzeRepository('https://github.com/a/b')).rejects.toMatchObject({

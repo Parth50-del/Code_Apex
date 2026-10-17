@@ -1,17 +1,18 @@
 import { useEffect, useRef, type FormEvent, type ReactNode } from 'react';
 import {
-  Activity,
   ArrowUpRight,
   BookOpen,
+  GitBranch,
   GitCommitHorizontal,
   Home,
-  Menu,
+  Radar,
   Shield,
   Users,
   X,
 } from 'lucide-react';
 import type { PageName, RepoResponse } from '../types';
-import { SourceLabel, Spinner } from './ui';
+import { AuthorAvatar } from './commit';
+import { SourceLabel } from './ui';
 
 export const NAV_ITEMS = [
   { label: 'Overview', icon: Home },
@@ -21,35 +22,57 @@ export const NAV_ITEMS = [
   { label: 'Story Mode', icon: BookOpen },
 ] as const;
 
+/** RepoRadar brand mark: radar rings with a sweep and a blip. */
+export function BrandMark({ size = 19 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeOpacity="0.35" strokeWidth="1.6" />
+      <circle cx="12" cy="12" r="6" stroke="currentColor" strokeOpacity="0.7" strokeWidth="1.6" />
+      <path d="M12 12 18.2 5.1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <circle cx="12" cy="12" r="2" fill="currentColor" />
+    </svg>
+  );
+}
+
+function ownerOf(fullName: string): string {
+  return fullName.split('/')[0] ?? '';
+}
+
 function SidebarContent({
   activePage,
   data,
+  branches,
+  branch,
   onNavigate,
   onLoadDemo,
+  onBranchChange,
 }: {
   activePage: PageName;
   data: RepoResponse | null;
+  branches: string[];
+  branch: string;
   onNavigate: (page: PageName) => void;
   onLoadDemo: () => void;
+  onBranchChange?: (branch: string) => void;
 }) {
   return (
     <>
-      <div className="brand-lockup">
-        <span className="brand-symbol">
-          <Activity size={18} aria-hidden="true" />
+      <div className="sidebar-brand">
+        <span className="brand-mark">
+          <BrandMark size={19} />
         </span>
         <span className="brand-text">
-          RepoRadar
+          <strong>RepoRadar</strong>
           <small>Repository intelligence</small>
         </span>
       </div>
-      <div className="sidebar-label">WORKSPACE</div>
-      <nav className="sidebar-nav" aria-label="Workspace pages">
+      <div className="nav-label">Workspace</div>
+      <nav className="nav" aria-label="Workspace pages">
         {NAV_ITEMS.map(({ label, icon: Icon }) => (
           <button
             key={label}
             type="button"
-            className={`nav-item ${activePage === label ? 'nav-item-active' : ''}`}
+            className={`nav-link ${activePage === label ? 'is-active' : ''}`}
             aria-current={activePage === label ? 'page' : undefined}
             onClick={() => onNavigate(label)}
           >
@@ -58,21 +81,51 @@ function SidebarContent({
           </button>
         ))}
       </nav>
-      <div className="sidebar-bottom">
-        <div className="sidebar-repo-label">CURRENT REPOSITORY</div>
-        {data ? (
-          <>
-            <strong className="sidebar-repo-name" title={data.repository.full_name}>
-              {data.repository.full_name}
-            </strong>
-            <SourceLabel source={data.source} />
-          </>
-        ) : (
-          <span className="quiet-label">No repository selected</span>
-        )}
+      <div className="sidebar-foot">
+        <div className="nav-label">Current repository</div>
+        <div className="repo-card">
+          {data ? (
+            <>
+              <div className="repo-card-ident">
+                <AuthorAvatar name={ownerOf(data.repository.full_name)} login={ownerOf(data.repository.full_name)} size="sm" />
+                <a
+                  className="repo-card-name"
+                  href={data.repository.html_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={data.repository.full_name}
+                >
+                  {data.repository.full_name}
+                </a>
+              </div>
+              <div className="repo-card-meta">
+                <span>
+                  <GitBranch size={11} aria-hidden="true" style={{ display: 'inline', verticalAlign: '-1px', marginRight: 4 }} />
+                  {data.repository.analyzed_branch ?? data.repository.default_branch}
+                </span>
+                {data.repository.language && <span>{data.repository.language}</span>}
+              </div>
+              {data.source === 'live' && branches.length > 0 && onBranchChange && (
+                <label className="control-field repo-card-branch">
+                  <span className="sr-only">Branch</span>
+                  <select value={branch} onChange={(event) => onBranchChange(event.target.value)}>
+                    {branches.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              <SourceLabel source={data.source} />
+            </>
+          ) : (
+            <span className="quiet-label">No repository selected</span>
+          )}
+        </div>
         <button
           type="button"
-          className="sidebar-demo-button"
+          className="btn btn-soft btn-block btn-sm"
           onClick={() => {
             void onLoadDemo();
           }}
@@ -84,15 +137,7 @@ function SidebarContent({
   );
 }
 
-function MobileMenu({
-  open,
-  onClose,
-  children,
-}: {
-  open: boolean;
-  onClose: () => void;
-  children: ReactNode;
-}) {
+function MobileMenu({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
@@ -146,13 +191,7 @@ function MobileMenu({
         aria-label="Navigation"
         onClick={(event) => event.stopPropagation()}
       >
-        <button
-          ref={closeRef}
-          type="button"
-          className="mobile-close"
-          aria-label="Close navigation"
-          onClick={onClose}
-        >
+        <button ref={closeRef} type="button" className="mobile-close" aria-label="Close navigation" onClick={onClose}>
           <X size={18} aria-hidden="true" />
         </button>
         {children}
@@ -167,12 +206,16 @@ export function Layout({
   analyzing,
   menuOpen,
   repoUrl,
+  loadedRepo,
+  branches,
+  branch,
   onOpenMenu,
   onCloseMenu,
   onNavigate,
   onRepoUrlChange,
   onAnalyze,
   onLoadDemo,
+  onBranchChange,
   children,
 }: {
   activePage: PageName;
@@ -180,39 +223,46 @@ export function Layout({
   analyzing: boolean;
   menuOpen: boolean;
   repoUrl: string;
+  loadedRepo: string | null;
+  branches: string[];
+  branch: string;
   onOpenMenu: () => void;
   onCloseMenu: () => void;
   onNavigate: (page: PageName) => void;
   onRepoUrlChange: (value: string) => void;
   onAnalyze: (event: FormEvent<HTMLFormElement>) => void;
   onLoadDemo: () => void;
+  onBranchChange?: (branch: string) => void;
   children: ReactNode;
 }) {
   const sidebar = (
     <SidebarContent
       activePage={activePage}
       data={data}
+      branches={branches}
+      branch={branch}
       onNavigate={(page) => {
         onNavigate(page);
         onCloseMenu();
       }}
       onLoadDemo={onLoadDemo}
+      onBranchChange={onBranchChange}
     />
   );
 
   return (
-    <div className="app-frame">
+    <div className="app-shell">
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
-      <aside className="desktop-sidebar" aria-label="Workspace navigation">
+      <aside className="app-sidebar" aria-label="Workspace navigation">
         {sidebar}
       </aside>
       <MobileMenu open={menuOpen} onClose={onCloseMenu}>
         {sidebar}
       </MobileMenu>
 
-      <div className="main-column">
+      <div className="app-column">
         <header className="topbar">
           <button
             type="button"
@@ -222,11 +272,11 @@ export function Layout({
             aria-controls="mobile-nav"
             onClick={onOpenMenu}
           >
-            <Menu size={19} aria-hidden="true" />
+            <MenuIcon />
           </button>
           <div className="topbar-repo">
-            <span className="topbar-kicker">REPOSITORY</span>
-            <strong>{data?.repository.full_name ?? 'Select a repository'}</strong>
+            <small>Repository</small>
+            <strong>{loadedRepo ?? data?.repository.full_name ?? 'Select a repository'}</strong>
           </div>
           {data && (
             <a className="topbar-github" href={data.repository.html_url} target="_blank" rel="noreferrer">
@@ -246,22 +296,45 @@ export function Layout({
               autoComplete="off"
               spellCheck={false}
             />
-            <button type="submit" disabled={analyzing}>
-              {analyzing ? <Spinner size={14} /> : null}
+            <button type="submit" className="btn btn-primary" disabled={analyzing}>
+              {analyzing ? <SpinnerInline /> : <RadarMarkIcon />}
               {analyzing ? 'Analyzing' : 'Analyze'}
             </button>
           </form>
         </header>
 
-        <main className="main-content" id="main-content" tabIndex={-1}>
+        <main className="app-main" id="main-content" tabIndex={-1}>
           {children}
         </main>
 
         <footer className="app-footer">
-          <span>RepoRadar</span>
+          <span>
+            <strong>RepoRadar</strong> · Heuristic repository intelligence
+          </span>
           <span>Risk scores are review-priority heuristics, not defect predictions.</span>
         </footer>
       </div>
     </div>
+  );
+}
+
+function SpinnerInline() {
+  return (
+    <svg width={14} height={14} viewBox="0 0 24 24" className="spin" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2.5" />
+      <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function RadarMarkIcon() {
+  return <BrandMark size={14} />;
+}
+
+function MenuIcon() {
+  return (
+    <svg width={19} height={19} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <path d="M4 6h16M4 12h16M4 18h16" />
+    </svg>
   );
 }
