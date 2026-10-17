@@ -69,11 +69,15 @@ export type RepoInfo = {
   full_name: string;
   description: string;
   default_branch: string;
+  /** Branch that was actually analyzed; may differ from the default branch. */
+  analyzed_branch?: string;
   language?: string | null;
   stars: number | null;
   forks: number | null;
   html_url: string;
   last_updated: string | null;
+  /** Owner avatar URL when GitHub provided one; null for the demo fixture. */
+  avatar_url?: string | null;
 };
 
 export type CommitDetail = {

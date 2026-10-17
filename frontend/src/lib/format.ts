@@ -104,6 +104,14 @@ export function isBot(contributor: Contributor): boolean {
   return login.endsWith('[bot]') || login === 'github-actions';
 }
 
+/** Commit-level variant used by the Time Machine bot filter. */
+export function isBotCommit(commit: Pick<CommitItem, 'author' | 'authorLogin' | 'authorType'>): boolean {
+  if (commit.authorType === 'Bot') return true;
+  const login = (commit.authorLogin || '').toLowerCase();
+  const name = (commit.author || '').toLowerCase();
+  return login.endsWith('[bot]') || name.endsWith('[bot]') || login === 'github-actions';
+}
+
 export function commitsWithDetails(commits: CommitItem[]): CommitItem[] {
   return commits.filter((commit) => commit.detailStatus === 'available');
 }
@@ -151,6 +159,7 @@ export type AddDelPoint = {
   label: string;
   additions: number;
   deletions: number;
+  date?: string | null;
 };
 
 /** Additions/deletions per commit, only for commits with fetched stats. */
@@ -162,5 +171,6 @@ export function additionsDeletionsByCommit(commits: CommitItem[]): AddDelPoint[]
       label: commit.sha.slice(0, 7),
       additions: commit.stats?.additions ?? 0,
       deletions: commit.stats?.deletions ?? 0,
+      date: commit.date,
     }));
 }

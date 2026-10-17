@@ -76,7 +76,10 @@ describe('additionsDeletionsByCommit', () => {
       commit({ sha: 'no-stats', stats: null }),
       commit({ sha: 'undefined-stats' }),
     ]);
-    expect(points).toEqual([{ key: 'has-stats', label: 'has-sta', additions: 7, deletions: 2 }]);
+    // The series carries each commit's date so charts can aggregate honestly by week.
+    expect(points).toEqual([
+      { key: 'has-stats', label: 'has-sta', additions: 7, deletions: 2, date: '2025-09-30T09:15:00Z' },
+    ]);
   });
 });
 
